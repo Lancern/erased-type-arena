@@ -1,6 +1,6 @@
 //! A type-erased allocation arena with proper dropping. It is just like [`typed-arena`], but the
 //! generic type parameter is erased from the arena and an arena is capable of allocating values of
-//! different types. Further more, potential use-after-free vulnerabilities due to the improper
+//! different types. Furthermore, potential use-after-free vulnerabilities due to the improper
 //! implementation of the `drop` function is prevented by dynamic checks.
 //!
 //! # Motivation
