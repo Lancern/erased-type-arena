@@ -3,6 +3,12 @@ name = "erased-type-arena"
 authors = ["Sirui Mu <msrlancern@gmail.com>"]
 version = "0.1.0"
 edition = "2018"
+license-file = "LICENSE"
+description = "A type-erased allocation arena with proper dropping."
+homepage = "https://github.com/Lancern/erased-type-arena"
+documentation = "https://docs.rs/erased-type-arena/0.1.0/erased_type_arena"
+repository = "https://github.com/Lancern/erased-type-arena"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
