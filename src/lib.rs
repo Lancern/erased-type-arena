@@ -175,7 +175,8 @@ impl Drop for Arena {
     }
 }
 
-/// A safe wrapper around a mutable reference to a value allocated in an arena.
+/// A safe wrapper around a mutable reference to a value allocated in an arena. It's the mutable
+/// counterpart of [`AllocRef`].
 ///
 /// This wrapper type can be `Deref`-ed to the allocated type. When being `Deref`-ed, this wrapper
 /// checks that the referenced value has not been dropped due to the dropping of the arena. For more
@@ -296,6 +297,118 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{}", self.get()))
+    }
+}
+
+/// A safe wrapper around an immutable reference to a value allocated in an arena. It's the
+/// immutable counterpart of [`AllocMut`].
+///
+/// This wrapper type can be `Deref`-ed to the allocated type. When being `Deref`-ed, this wrapper
+/// checks that the referenced value has not been dropped due to the dropping of the arena. For more
+/// explanation about why this could happen, you can refer to the crate-level documentation.
+#[derive(Clone)]
+pub struct AllocRef<'a, T: ?Sized> {
+    value: &'a T,
+    dropped: Rc<Cell<bool>>,
+}
+
+impl<'a, T> AllocRef<'a, T>
+where
+    T: ?Sized,
+{
+    /// Get an immutable reference to the allocated value.
+    ///
+    /// This function panics if the allocated value has been dropped.
+    pub fn get(&self) -> &T {
+        self.ensure_not_dropped();
+        self.value
+    }
+
+    /// Get an immutable reference to the allocated value, without safety checks.
+    pub unsafe fn get_unchecked(&self) -> &T {
+        self.value
+    }
+
+    /// Determine whether the allocated value is dropped.
+    pub fn dropped(&self) -> bool {
+        self.dropped.get()
+    }
+
+    /// Consume this `AllocRef` and get the immutable reference to the allocated value.
+    ///
+    /// This function panics if the allocated value has been dropped.
+    pub unsafe fn leak(self) -> &'a T {
+        self.ensure_not_dropped();
+        self.value
+    }
+
+    /// Consume this `AllocRef` and get the immutable reference to the allocated value, without
+    /// safety checks.
+    pub unsafe fn leak_unchecked(self) -> &'a T {
+        self.value
+    }
+
+    /// Ensures that the allocated value is not dropped.
+    ///
+    /// This function panics if the allocated value has been dropped.
+    fn ensure_not_dropped(&self) {
+        assert!(
+            !self.dropped(),
+            "The allocated object requesting for use has been dropped"
+        );
+    }
+}
+
+impl<'a, T> AsRef<T> for AllocRef<'a, T>
+where
+    T: ?Sized,
+{
+    fn as_ref(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<'a, T> Borrow<T> for AllocRef<'a, T>
+where
+    T: ?Sized,
+{
+    fn borrow(&self) -> &T {
+        self.get()
+    }
+}
+
+impl<'a, T> Debug for AllocRef<'a, T>
+where
+    T: ?Sized + Debug,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("{:?}", self.value))
+    }
+}
+
+impl<'a, T> Deref for AllocRef<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
+impl<'a, T> Display for AllocRef<'a, T>
+where
+    T: ?Sized + Display,
+{
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("{}", self.value))
+    }
+}
+
+impl<'a, T> From<AllocMut<'a, T>> for AllocRef<'a, T> {
+    fn from(ptr: AllocMut<'a, T>) -> Self {
+        Self {
+            value: ptr.value,
+            dropped: ptr.dropped,
+        }
     }
 }
 
@@ -445,6 +558,47 @@ mod tests {
             arena.alloc(Mock {
                 data: 20,
                 another: Some(first),
+            });
+
+            // The following statement should panic.
+            drop(arena);
+        }
+    }
+
+    mod alloc_ref_tests {
+        use super::*;
+
+        #[test]
+        #[should_panic]
+        fn test_use_dropped_value() {
+            struct Mock<'a, 'b> {
+                output: Option<&'b mut i32>,
+                data: i32,
+                another: Option<AllocRef<'a, Mock<'a, 'b>>>,
+            }
+
+            impl<'a, 'b> Drop for Mock<'a, 'b> {
+                fn drop(&mut self) {
+                    let output = self.output.take();
+                    if let Some(another) = &self.another {
+                        if let Some(output) = output {
+                            *output = another.data;
+                        }
+                    }
+                }
+            }
+
+            let arena = Arena::new();
+            let mut output = 0;
+            let first = arena.alloc(Mock {
+                output: None,
+                data: 10,
+                another: None,
+            });
+            arena.alloc(Mock {
+                output: Some(&mut output),
+                data: 20,
+                another: Some(first.into()),
             });
 
             // The following statement should panic.
