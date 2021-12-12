@@ -91,21 +91,17 @@
 //! }
 //! ```
 //!
-//! To solve this problem, this crate provides a safe wrapper [`ArenaMut`] around mutable references
-//! to allocated values. Each time the safe wrapper is [`Deref`]-ed, it checks whether the
-//! referenced value has been dropped. If, unfortunately, the referenced value has been dropped,
-//! it panics the program and thus prevents undefined behaviors from happening.
+//! To solve this problem, this crate provides two safe wrappers [`ArenaMut`] and [`ArenaRef`]
+//! around mutable and immutable references to allocated values. Each time the safe wrapper is
+//! [`Deref`]-ed, it checks whether the referenced value has been dropped. If, unfortunately, the
+//! referenced value has been dropped, it panics the program and thus prevents undefined behaviors
+//! from happening.
 //!
 //! # Usage
 //!
 //! The [`Arena`] struct represents an allocation arena.
 //!
-//! [`Arena`]: struct.Arena.html
-//! [`ArenaMut`]: struct.ArenaMut.html
 //! [`bumpalo`]: https://crates.io/crates/bumpalo
-//! [`Deref`]: https://doc.rust-lang.org/std/ops/trait.Deref.html
-//! [`Drop`]: https://doc.rust-lang.org/std/ops/trait.Drop.html
-//! [`RefCell`]: https://doc.rust-lang.org/std/cell/struct.RefCell.html
 //! [`typed-arena`]: https://crates.io/crates/typed-arena
 //!
 
@@ -113,27 +109,32 @@
 
 extern crate alloc;
 extern crate core;
+#[cfg(test)]
+extern crate std;
+
+mod utils;
 
 use alloc::alloc::{alloc, Layout};
 use alloc::boxed::Box;
-use alloc::rc::Rc;
-use alloc::vec::Vec;
+use alloc::sync::Arc;
 use core::borrow::{Borrow, BorrowMut};
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::fmt::{Debug, Display, Formatter};
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
+use crate::utils::linked_list::ConcurrentLinkedList;
+
 /// A type-erased allocation arena with proper dropping.
 pub struct Arena {
-    objects: RefCell<Vec<ArenaBox>>,
+    objects: ConcurrentLinkedList<ArenaBox>,
 }
 
 impl Arena {
     /// Create a new arena.
     pub fn new() -> Self {
         Self {
-            objects: RefCell::new(Vec::new()),
+            objects: ConcurrentLinkedList::new(),
         }
     }
 
@@ -146,7 +147,7 @@ impl Arena {
         let arena_box = ArenaBox::new(value);
         let object_ptr = arena_box.object;
         let dropped_flag = arena_box.dropped.clone();
-        self.objects.borrow_mut().push(arena_box);
+        self.objects.push_front(arena_box);
 
         AllocMut {
             value: unsafe { object_ptr.cast().as_mut() },
@@ -162,16 +163,9 @@ impl Arena {
     pub unsafe fn alloc_unchecked<'s, T: 's>(&'s self, value: T) -> &'s mut T {
         let arena_box = ArenaBox::new(value);
         let object_ptr = arena_box.object;
-        self.objects.borrow_mut().push(arena_box);
+        self.objects.push_front(arena_box);
 
         object_ptr.cast().as_mut()
-    }
-}
-
-impl Drop for Arena {
-    fn drop(&mut self) {
-        // The following statement triggers the dropping of each `ArenaBox` value.
-        self.objects.borrow_mut().clear();
     }
 }
 
@@ -183,7 +177,7 @@ impl Drop for Arena {
 /// explanation about why this could happen, you can refer to the crate-level documentation.
 pub struct AllocMut<'a, T: ?Sized> {
     value: &'a mut T,
-    dropped: Rc<Cell<bool>>,
+    dropped: Arc<Cell<bool>>,
 }
 
 impl<'a, T: ?Sized> AllocMut<'a, T> {
@@ -309,7 +303,7 @@ where
 #[derive(Clone)]
 pub struct AllocRef<'a, T: ?Sized> {
     value: &'a T,
-    dropped: Rc<Cell<bool>>,
+    dropped: Arc<Cell<bool>>,
 }
 
 impl<'a, T> AllocRef<'a, T>
@@ -428,7 +422,7 @@ struct ArenaBox {
     dropper: Box<dyn FnMut()>,
 
     /// A boolean flag indicating whether the allocated value has been dropped.
-    dropped: Rc<Cell<bool>>,
+    dropped: Arc<Cell<bool>>,
 }
 
 impl ArenaBox {
@@ -451,7 +445,7 @@ impl ArenaBox {
         Self {
             object,
             dropper,
-            dropped: Rc::new(Cell::new(false)),
+            dropped: Arc::new(Cell::new(false)),
         }
     }
 
@@ -470,6 +464,9 @@ impl Drop for ArenaBox {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+    use core::cell::RefCell;
+
     use super::*;
 
     mod arena_tests {
@@ -527,7 +524,7 @@ mod tests {
             drop(arena);
 
             let output = output.borrow().clone();
-            assert_eq!(output, alloc::vec![10, 20]);
+            assert_eq!(output, alloc::vec![20, 10]);
         }
     }
 
@@ -551,14 +548,16 @@ mod tests {
             }
 
             let arena = Arena::new();
-            let first = arena.alloc(Mock {
+            let mut first = arena.alloc(Mock {
                 data: 10,
                 another: None,
             });
-            arena.alloc(Mock {
+            let second = arena.alloc(Mock {
                 data: 20,
-                another: Some(first),
+                another: None,
             });
+
+            first.another = Some(second);
 
             // The following statement should panic.
             drop(arena);
@@ -590,16 +589,18 @@ mod tests {
 
             let arena = Arena::new();
             let mut output = 0;
-            let first = arena.alloc(Mock {
+            let mut first = arena.alloc(Mock {
+                output: Some(&mut output),
+                data: 20,
+                another: None,
+            });
+            let second = arena.alloc(Mock {
                 output: None,
                 data: 10,
                 another: None,
             });
-            arena.alloc(Mock {
-                output: Some(&mut output),
-                data: 20,
-                another: Some(first.into()),
-            });
+
+            first.another = Some(second.into());
 
             // The following statement should panic.
             drop(arena);
