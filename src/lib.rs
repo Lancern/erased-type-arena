@@ -114,14 +114,14 @@ extern crate std;
 
 mod utils;
 
-use alloc::alloc::{alloc, Layout};
+use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::borrow::{Borrow, BorrowMut};
 use core::cell::Cell;
 use core::fmt::{Debug, Display, Formatter};
 use core::ops::{Deref, DerefMut};
-use core::ptr::NonNull;
+use core::ptr::{drop_in_place, NonNull};
 
 use crate::utils::linked_list::ConcurrentLinkedList;
 
@@ -430,8 +430,8 @@ impl ArenaBox {
     /// the allocated value.
     fn new<T>(value: T) -> Self {
         // Allocate memory suitable for holding a value of type `T`.
-        let object =
-            unsafe { NonNull::new(alloc(Layout::new::<T>())).expect("alloc returns null pointer") };
+        let layout = Layout::new::<T>();
+        let object = unsafe { NonNull::new(alloc(layout)).expect("alloc returns null pointer") };
 
         // Initialize a value in the allocated memory.
         unsafe {
@@ -439,8 +439,10 @@ impl ArenaBox {
         }
 
         // Create a dropper function that can be used for dropping the initialized value.
-        let dropper =
-            Box::new(move || unsafe { core::ptr::drop_in_place(object.as_ptr() as *mut T) });
+        let dropper = Box::new(move || unsafe {
+            drop_in_place(object.as_ptr() as *mut T);
+            dealloc(object.as_ptr(), layout);
+        });
 
         Self {
             object,
