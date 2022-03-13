@@ -420,8 +420,11 @@ struct ArenaBox {
     /// Pointer to the allocated value.
     object: NonNull<u8>,
 
+    /// The layout of the allocated value.
+    object_layout: Layout,
+
     /// The function used for dropping the allocated value.
-    dropper: Box<dyn FnMut()>,
+    dropper: Box<dyn FnMut(*mut u8, Layout)>,
 
     /// A boolean flag indicating whether the allocated value has been dropped.
     dropped: Arc<Cell<bool>>,
@@ -433,21 +436,36 @@ impl ArenaBox {
     fn new<T>(value: T) -> Self {
         // Allocate memory suitable for holding a value of type `T`.
         let layout = Layout::new::<T>();
-        let object = unsafe { NonNull::new(alloc(layout)).expect("alloc returns null pointer") };
+        let object = if layout.size() == 0 {
+            NonNull::dangling()
+        } else {
+            let object =
+                unsafe { NonNull::new(alloc(layout)).expect("alloc returns null pointer") };
 
-        // Initialize a value in the allocated memory.
-        unsafe {
-            core::ptr::write(object.cast::<T>().as_ptr(), value);
-        }
+            // Initialize a value in the allocated memory.
+            unsafe {
+                core::ptr::write(object.cast::<T>().as_ptr(), value);
+            }
+
+            object
+        };
 
         // Create a dropper function that can be used for dropping the initialized value.
-        let dropper = Box::new(move || unsafe {
-            drop_in_place(object.as_ptr() as *mut T);
-            dealloc(object.as_ptr(), layout);
+        // The call to `Box::new` below should not alloc any heap memory since the closure is non-capturing.
+        let dropper = Box::new(|ptr, layout: Layout| {
+            unsafe {
+                drop_in_place(ptr as *mut T);
+            }
+            if layout.size() != 0 {
+                unsafe {
+                    dealloc(ptr, layout);
+                }
+            }
         });
 
         Self {
             object,
+            object_layout: layout,
             dropper,
             dropped: Arc::new(Cell::new(false)),
         }
@@ -462,7 +480,7 @@ impl ArenaBox {
 impl Drop for ArenaBox {
     fn drop(&mut self) {
         self.mark_as_dropped();
-        (self.dropper)();
+        (self.dropper)(self.object.as_ptr(), self.object_layout);
     }
 }
 
@@ -484,6 +502,12 @@ mod tests {
 
             let value = arena.alloc(20);
             assert_eq!(*value.get(), 20);
+        }
+
+        #[test]
+        fn test_alloc_zst() {
+            let arena = Arena::new();
+            arena.alloc(());
         }
 
         #[test]
@@ -529,6 +553,27 @@ mod tests {
 
             let output = output.borrow().clone();
             assert_eq!(output, alloc::vec![20, 10]);
+        }
+
+        #[test]
+        fn test_drop_zst() {
+            static mut FLAG: bool = false;
+
+            struct Zst;
+
+            impl Drop for Zst {
+                fn drop(&mut self) {
+                    unsafe {
+                        FLAG = true;
+                    }
+                }
+            }
+
+            let arena = Arena::new();
+            arena.alloc(Zst);
+            drop(arena);
+
+            assert_eq!(unsafe { FLAG }, true);
         }
     }
 
