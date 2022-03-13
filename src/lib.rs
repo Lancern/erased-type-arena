@@ -11,6 +11,8 @@
 //! node is shared by multiple other nodes via immutable references to interior-mutable containers
 //! such as [`RefCell`]. We can illustrate the approach by the following code definitions:
 //!
+//! [`RefCell`]: core::cell::RefCell
+//!
 //! ```ignore
 //! struct GraphContext {
 //!     node_arena: Arena,
@@ -43,7 +45,7 @@
 //!
 //! ```ignore
 //! struct GraphContext<'ctx> {  // The `'ctx` lifetime notation here is clearly inappropriate
-//!     node_arena: Arena<RefCell<GraphContext<'ctx>>>,
+//!     node_arena: Arena<RefCell<GraphNode<'ctx>>>,
 //! }
 //!
 //! impl GraphContext {
@@ -91,7 +93,7 @@
 //! }
 //! ```
 //!
-//! To solve this problem, this crate provides two safe wrappers [`ArenaMut`] and [`ArenaRef`]
+//! To solve this problem, this crate provides two safe wrappers [`AllocMut`] and [`AllocRef`]
 //! around mutable and immutable references to allocated values. Each time the safe wrapper is
 //! [`Deref`]-ed, it checks whether the referenced value has been dropped. If, unfortunately, the
 //! referenced value has been dropped, it panics the program and thus prevents undefined behaviors
